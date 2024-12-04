@@ -23,37 +23,37 @@ class LSTMNet(Module):
         )
 
     def forward(self, x, hidden=None):
-        # LSTM前向计算
+        # LSTM forward computation
         lstm_out, hidden = self.lstm(x, hidden)
-        # 获取LSTM输出的维度信息
+        # Get the dimension of LSTM output
         batch_size, time_step, hidden_size = lstm_out.shape
 
         if self.config.op == 0:
-            # 将lstm_out变成(batch_size*time_step, hidden_size), 才能传入全连接层
+            # Reshape lstm_out to (batch_size*time_step, hidden_size) to pass into the fully connected layer
             lstm_out = lstm_out.reshape(-1, hidden_size)
-            # 全连接层
+            # Fully connected layer
             linear_out = self.linear(lstm_out)
-            # 转换维度, 用于输出
+            # Reshape for output
             output = linear_out.reshape(time_step, batch_size, -1)
-            # 我们只需要返回最后一个时刻的数据即可
+            # Return only the last timestep data
             return output[-1]
 
         elif self.config.op == 1:
-            linear_out = self.linear(lstm_out)  # 全部时刻都输入到全连接层
-            output = linear_out[:, -1, :]  # 取最后一个时刻的输出
+            linear_out = self.linear(lstm_out)  # Pass all timesteps through the fully connected layer
+            output = linear_out[:, -1, :]  # Get the output of the last timestep
             return output
 
         elif self.config.op == 2:
-            linear_out = self.linear(lstm_out[:, -1, :])  # 取LSTM最后一个时刻的输出作为全连接层输入
+            linear_out = self.linear(lstm_out[:, -1, :])  # Use the output of the last timestep of LSTM for the fully connected layer
             output = linear_out
             return output
 
 
 def train(config, train_and_valid_data):
-    model = LSTMNet(config).to(config.device)  # 模型实例化
+    model = LSTMNet(config).to(config.device)  # Instantiate the model
 
     train_X, train_Y, valid_X, valid_Y = train_and_valid_data
-    # 先转为Tensor
+    # Convert to Tensor
     train_X, train_Y, valid_X, valid_Y = (
         torch.from_numpy(train_X).float(),
         torch.from_numpy(train_Y).float(),
@@ -61,14 +61,14 @@ def train(config, train_and_valid_data):
         torch.from_numpy(valid_Y).float(),
     )
 
-    # 再通过Dataloader自动生成可训练的batch数据
+    # Use DataLoader to automatically generate trainable batch data
     train_loader = DataLoader(TensorDataset(train_X, train_Y), batch_size=config.batch_size)
     valid_loader = DataLoader(TensorDataset(valid_X, valid_Y), batch_size=config.batch_size)
 
-    # 定义优化器
+    # Define optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 
-    # 损失函数
+    # Loss function
     criterion = torch.nn.MSELoss()
 
     valid_loss_min = float("inf")
@@ -76,69 +76,72 @@ def train(config, train_and_valid_data):
     train_loss = []
     valid_loss = []
     for epoch in range(config.epoch):
-        model.train()  # 切换为训练模式
-        train_loss_array = []  # 记录每个batch的loss
+        model.train()  # Switch to training mode
+        train_loss_array = []  # Record the loss of each batch
         hidden_train = None
         for train_x, train_y in train_loader:
             train_x, train_y = train_x.to(config.device), train_y.to(config.device)
-            optimizer.zero_grad()  # 训练前将梯度信息置为 0
-            pred_y = model(train_x, hidden_train)  # 前向计算
+            optimizer.zero_grad()  # Clear gradient information before training
+            pred_y = model(train_x, hidden_train)  # Forward computation
 
-            loss = criterion(pred_y, train_y)  # 计算loss
-            loss.backward()  # loss反向传播
-            optimizer.step()  # 更新参数
+            loss = criterion(pred_y, train_y)  # Compute loss
+            loss.backward()  # Backpropagation
+            optimizer.step()  # Update parameters
 
             train_loss_array.append(loss.item())
 
-        # 以下为早停机制, 当模型连续训练config.patience个epoch都没有使验证集预测效果提升时, 就停止, 防止过拟合
-        model.eval()  # 切换为评估模式
-        valid_loss_array = []  # 记录每个batch的loss
+        # Early stopping mechanism: if the validation set prediction performance does not improve for config.patience epochs, stop to prevent overfitting
+        model.eval()  # Switch to evaluation mode
+        valid_loss_array = []  # Record the loss of each batch
         hidden_valid = None
         for valid_x, valid_y in valid_loader:
             valid_x, valid_y = valid_x.to(config.device), valid_y.to(config.device)
-            pred_y = model(valid_x, hidden_valid)  # 前向计算
+            pred_y = model(valid_x, hidden_valid)  # Forward computation
 
-            loss = criterion(pred_y, valid_y)  # 计算loss
+            loss = criterion(pred_y, valid_y)  # Compute loss
 
             valid_loss_array.append(loss.item())
 
-        # 计算本轮的训练总损失和验证总损失
+        # Compute the total loss for this epoch
         train_loss_cur = np.mean(train_loss_array)
         valid_loss_cur = np.mean(valid_loss_array)
 
-        # 打印损失
+        # Print losses
         print(f"Epoch {epoch}/{config.epoch}: Train Loss is {train_loss_cur:.6f}, Valid Loss is {valid_loss_cur:.6f}")
         train_loss.append(train_loss_cur)
         valid_loss.append(valid_loss_cur)
+        
         if valid_loss_cur < valid_loss_min:
             valid_loss_min = valid_loss_cur
             bad_epoch = 0
-            torch.save(model.state_dict(), config.model_save_path)  # 保存模型
+            torch.save(model.state_dict(), config.model_save_path)  # Save model
         else:
             bad_epoch += 1
-            if bad_epoch >= config.patience:  # 如果验证集指标连续patience个epoch没有提升，就停掉训练
-                print(" The training stops early in epoch {}".format(epoch))
+            if bad_epoch >= config.patience:  # Stop training if validation metric does not improve for patience epochs
+                print(f"The training stops early in epoch {epoch}")
                 break
-
+            
+    # Load the best model
+    model.load_state_dict(torch.load(config.model_save_path))
     return model, train_loss, valid_loss
 
 
 def predict(config, test_X, model_trained: LSTMNet = None):
     if model_trained is None:
-        model_trained = LSTMNet(config).to(config.device)  # 模型实例化
-        state_dict = torch.load(config.model_load_path)  # 加载训练好的模型参数
+        model_trained = LSTMNet(config).to(config.device)  # Instantiate the model
+        state_dict = torch.load(config.model_load_path, weights_only=True)  # Load trained model parameters
         model_trained.load_state_dict(state_dict)
 
-    # 首先转为Tensor
+    # Convert to Tensor
     test_X = torch.from_numpy(test_X).float()
-    # 再通过Dataloader自动生成可训练的batch数据
+    # Use DataLoader to automatically generate batch data for testing
     test_loader = DataLoader(TensorDataset(test_X), batch_size=1)
 
-    # 先定义一个tensor保存预测结果
+    # Define a tensor to store predictions
     result = torch.Tensor().to(config.device)
 
-    # 预测过程
-    model_trained.eval()  # 切换为评估模式
+    # Prediction process
+    model_trained.eval()  # Switch to evaluation mode
     hidden_predict = None
     for test_x in test_loader:
         test_x = test_x[0].to(config.device)
@@ -146,6 +149,4 @@ def predict(config, test_X, model_trained: LSTMNet = None):
         cur_pred = torch.squeeze(pred_y, dim=0)
         result = torch.cat((result, cur_pred), dim=0)
 
-    return result.detach().cpu().numpy()  # 先去梯度信息, 如果在gpu要转到cpu, 最后要返回numpy数据
-
-
+    return result.detach().cpu().numpy()  # Remove gradient information, move to CPU if on GPU, and return as numpy array

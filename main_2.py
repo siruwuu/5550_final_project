@@ -8,102 +8,101 @@ import torch
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import host_subplot
 from codecarbon import EmissionsTracker
+import os
 
 class Config:
     def __init__(self):
-        self.feature_columns = [1]#list(range(1, 24))  # 要作为feature的列, 按原数据从0开始计算，也可以用list 如[2,4,6,8]设置
-        self.label_columns = [1]  # 要预测的列, 按原数据从0开始计算, 如同时预测第4列和第5列可写为 [4,5]
-        self.label_in_feature_index = (lambda x, y: [x.index(i) for i in y])(self.feature_columns, self.label_columns)  # 因为feature不一定从0开始
+        self.feature_columns = list(range(1, 5))  # Columns to be used as features, calculated starting from 0 in the original data. You can also use a list, such as [2,4,6,8].
+        self.label_columns = [1]  # Columns to predict, calculated starting from 0 in the original data. For example, to predict both the 4th and 5th columns, use [4,5].
+        self.label_in_feature_index = (lambda x, y: [x.index(i) for i in y])(self.feature_columns, self.label_columns)  # Because features might not start from 0.
 
-        # 网络参数
+        # Network parameters
         self.input_size = len(self.feature_columns)
         self.ouput_size = len(self.label_columns)
 
-        self.lstm_hidden_size = 64  # GRU的隐藏层维度
-        self.lstm_layers = 2  # GRU的堆叠层数
-        self.dropout_rate = 0.2  # dropout概率
-        self.time_step = 3  # 这个参数很重要，是设置用前多少天的数据来预测，也是GRU的time step数，请保证训练数据量大于它
+        self.lstm_hidden_size = 256  # Hidden layer dimension of the LSTM
+        self.lstm_layers = 2  # Number of stacked LSTM layers
+        self.dropout_rate = 0.3  # Dropout probability
+        self.time_step = 5  # This parameter is crucial: it sets how many past days of data to use for prediction, which is also the time step for the LSTM. Ensure training data is larger than this.
 
-        # 路径参数
-        self.train_data_path = "CA_combined_precipitation_2024.csv"
+        # Path parameters
+        self.train_data_path = "./data/processed_data.csv"
 
-        # 训练好的模型的存储位置
+        # Path to save the trained model
         self.model_save_path = "./trained_model/model_lstm.pth"
 
-        # 要调用的训练好的模型的存储位置
+        # Path to load the trained model
         self.model_load_path = "./trained_model/model_lstm.pth"
 
-        # 存放预测和测试的结果数据csv
-        self.csv_file_path = "./csv/predict_result.csv"
+        # Path to save the prediction and test result data CSV
+        self.csv_file_path = "./result_csv/predict_result.csv"
 
-        # 最后预测效果图保存路径
+        # Path to save the final prediction effect plot
         self.predict_effect_path = "./fig/"
 
-        # 训练集, 测试集和验证集的划分
-        self.train_data_rate = 0.8  # 训练数据占总体数据比例，测试数据就是 1-train_data_rate
-        self.valid_data_rate = 0.15  # efd例，验证集在训练过程使用，为了做模型和参数选择
+        # Division of training, testing, and validation datasets
+        self.train_data_rate = 0.8  # Proportion of training data in the total dataset; the test data will be 1 - train_data_rate.
+        self.valid_data_rate = 0.15  # Proportion of validation set used during training to choose models and parameters.
 
-        # 训练参数
-        self.batch_size = 32
-        self.learning_rate = 0.001
-        self.epoch = 50  # 整个训练集被训练多少遍，不考虑早停的前提下
-        self.patience = 10  # 训练多少epoch，验证集没提升就停掉
-        self.random_seed = 42  # 随机种子，保证可复现
-        self.shuffle_train_data = True  # 是否对训练数据做shuffle
+        # Training parameters
+        self.batch_size = 128
+        self.learning_rate = 0.0005
+        self.epoch = 100  # The entire training set will be trained this many times, assuming no early stopping.
+        self.patience = 10  # Stop training if the validation set does not improve for this many epochs.
+        self.random_seed = 42  # Random seed to ensure reproducibility
+        self.shuffle_train_data = True  # Whether to shuffle the training data
 
-        # 训练和预测的启停
+        # Control flags for training and prediction
         self.do_train = True
         self.do_predict = True
         self.use_trained_model = True
 
-        # GRU和全连接层的连接关系选择
+        # Choice of connection between LSTM and fully connected layers
         self.op = 2
 
-        # 决定是否使用cuda
+        # Decides whether to use CUDA
         self.use_cuda = True
-        self.device = torch.device("cuda:0" if self.use_cuda and torch.cuda.is_available() else "cpu")  # CPU训练还是GPU
+        self.device = torch.device("cuda:0" if self.use_cuda and torch.cuda.is_available() else "cpu")  # CPU or GPU training
 
-# 保存碳排放数据到CSV文件
-
+# Save carbon emissions data to a CSV file
 def save_emissions_to_csv(emissions):
     emission_data = {
         "project_name": ["LSTM-Precipitation"],
         "emissions_kg": [emissions],
     }
     df = pd.DataFrame(emission_data)
-    df.to_csv("./csv/carbon_emissions.csv", index=False)
+    df.to_csv("./result_csv/carbon_emissions.csv", index=False)
     print("Carbon emissions saved to carbon_emissions.csv")
 
-
-# 主函数
+# Main function
 
 class Data:
     def __init__(self, config):
         self.config = config
-        self.data, self.data_column_name = self.read_data()  # 从csv中读取数据
+        self.data, self.data_column_name = self.read_data()  # Read data from the CSV file
 
-        self.data_num = self.data.shape[0]  # 总共的数据量
-        self.train_num = int(self.data_num * self.config.train_data_rate)  # 训练集的数据量
-        self.test_num = self.data_num - self.train_num  # 测试集的数据量
+        self.data_num = self.data.shape[0]  # Total number of data points
+        self.train_num = int(self.data_num * self.config.train_data_rate)  # Number of training data points
+        self.test_num = self.data_num - self.train_num  # Number of test data points
 
-        self.scalerX = preprocessing.MinMaxScaler()  # 用于归一化输入特征
-        self.scalerY = preprocessing.MinMaxScaler()  # 用于归一化输出
+        self.scalerX = preprocessing.MinMaxScaler()  # Used for normalizing input features
+        self.scalerY = preprocessing.MinMaxScaler()  # Used for normalizing output
 
     def read_data(self):
         init_data = pd.read_csv(self.config.train_data_path, usecols=self.config.feature_columns)
-        return init_data.values, init_data.columns.tolist()  # columns.tolist()是获取列名
+        return init_data.values, init_data.columns.tolist()  # columns.tolist() gets column names
 
     def get_train_and_valid_data(self):
-        # 获取训练集
+        # Obtain the training set
         feature_data = self.data[: self.train_num]
-        # 将延后time_step行的数据作为label
+        # Use data delayed by time_step rows as labels
         label_data = self.data[self.config.time_step : self.config.time_step + self.train_num, self.config.label_in_feature_index]
 
-        # 每time_step行数据会作为一个样本, 两个样本错开一行, 比如: 1-20行, 2-21行
+        # Each time_step rows will be one sample, and two samples are staggered by one row, e.g., rows 1-20 and 2-21
         train_X = [feature_data[i : i + self.config.time_step] for i in range(self.train_num - self.config.time_step)]
         train_Y = [label_data[i] for i in range(self.train_num - self.config.time_step)]
 
-        # 从训练集中分离出验证集, 并打乱
+        # Split the training set into a validation set, and shuffle
         train_X, valid_X, train_Y, valid_Y = train_test_split(
             train_X,
             train_Y,
@@ -112,88 +111,107 @@ class Data:
             shuffle=self.config.shuffle_train_data,
         )
 
-        # 转换为ndarray
+        # Convert to ndarray
         train_X, valid_X, train_Y, valid_Y = np.array(train_X), np.array(valid_X), np.array(train_Y), np.array(valid_Y)
 
-        # 由于标准化需要的维度必须小于2, 所以对于输入先采用reshape
+        # Reshape for normalization, since the required dimension for normalization must be less than 2
         train_X, valid_X = train_X.reshape((train_X.shape[0], -1)), valid_X.reshape((valid_X.shape[0], -1))
 
-        # 将训练集标准化,
+        # Normalize the training set
         norm_train_X = self.scalerX.fit_transform(train_X)
         norm_train_Y = self.scalerY.fit_transform(train_Y)
 
-        # 再将验证集标准化
+        # Normalize the validation set
         norm_valid_X = self.scalerX.transform(valid_X)
         norm_valid_Y = self.scalerY.transform(valid_Y)
 
-        # 之后再reshape回去
+        # Reshape back
         norm_train_X = norm_train_X.reshape((norm_train_X.shape[0], -1, self.config.input_size))
         norm_valid_X = norm_valid_X.reshape((norm_valid_X.shape[0], -1, self.config.input_size))
 
         return norm_train_X, norm_train_Y, norm_valid_X, norm_valid_Y
 
     def get_test_data(self, return_label_data=False):
-        # 获取测试集
+        # Obtain the test set
         feature_data = self.data[self.train_num :]
-        # 将延后time_step行的数据作为label
+        # Use data delayed by time_step rows as labels
         label_data = self.data[self.config.time_step + self.train_num :, self.config.label_in_feature_index]
 
-        # 每time_step行数据会作为一个样本, 两个样本错开一行, 比如: 1-20行, 2-21行
+        # Each time_step rows will be one sample, and two samples are staggered by one row, e.g., rows 1-20 and 2-21
         test_X = [feature_data[i : i + self.config.time_step] for i in range(self.test_num - self.config.time_step)]
         test_Y = [label_data[i] for i in range(self.test_num - self.config.time_step)]
 
-        # 转换为ndarray
+        # Convert to ndarray
         test_X, test_Y = np.array(test_X), np.array(test_Y)
 
-        # 由于标准化需要的维度必须小于2, 所以对于输入先采用reshape
+        # Reshape for normalization, since the required dimension for normalization must be less than 2
         test_X = test_X.reshape((test_X.shape[0], -1))
 
-        # 将测试集标准化
+        # Normalize the test set
         norm_test_X = self.scalerX.transform(test_X)
         norm_test_Y = self.scalerY.transform(test_Y)
 
-        # 之后再reshape回去
+        # Reshape back
         norm_test_X = norm_test_X.reshape((norm_test_X.shape[0], -1, self.config.input_size))
 
-        if return_label_data:  # 实际应用中的测试集是没有label数据的
+        if return_label_data:  # In real-world applications, test sets do not include label data
             return norm_test_X, norm_test_Y
         return norm_test_X
 
 
-"""绘图"""
-
+"""Plotting"""
 
 def plot(config, test_Y, pred_Y_mean):
     f, ax = plt.subplots(1, 1)
     x_axis = np.arange(test_Y.shape[0])
-    ax.plot(x_axis, test_Y, label="real value", c="r")  # 绘制真实值为红色的line
-    ax.plot(x_axis, pred_Y_mean, label="pred value", c="b")  # 绘制预测的平均值为蓝色的line
-    ax.grid(linestyle="--", alpha=0.5)  # 绘制格栅
-    ax.legend()  # 绘制标签
-    # 标题
+    ax.plot(x_axis, test_Y, label="real value", c="r")  # Plot real values as a red line
+    ax.plot(x_axis, pred_Y_mean, label="predicted value", c="b")  # Plot predicted mean values as a blue line
+    ax.grid(linestyle="--", alpha=0.5)  # Draw gridlines
+    ax.legend()  # Draw legend
+    # Title
     ax.set_title("Effluent COD")
-    # 坐标轴
-    ax.set_xlabel("2 hours/sample")
-    ax.set_ylabel("mg/L")
-    plt.savefig(config.predict_effect_path + "Forecasting hidden size 64 eopch 1000.jpg")
+    # Axes labels
+    ax.set_xlabel("24 hours/sample")
+    ax.set_ylabel("meters")
+    plt.savefig(config.predict_effect_path + "Forecasting hidden size 256 epoch 100.jpg")
 
 def plot_loss(config, train_loss, valid_loss):
+    if not train_loss or not valid_loss:  # Check if empty
+        print("Train Loss or Validation Loss is empty. Skipping plot.")
+        return
+
     plt.figure()
-    x_axis = [k + 1 for k in range(len(train_loss))] # 横坐标
-    plt.plot(x_axis, train_loss, label="train_loss", c="r") # 绘制真实值为红色的line
-    plt.plot(x_axis, valid_loss, label="valid_loss", c="b") # 绘制预测的平均值为蓝色的line
-    plt.grid(linestyle="--", alpha=0.5) # 绘制格栅
-    plt.legend() # 绘制标签
-    # 标题
-    title_string = "LOSS when hidden size 64 eopch 1000"
+    x_axis = [k + 1 for k in range(len(train_loss))]  # Horizontal axis
+    plt.plot(x_axis, train_loss, label="train_loss", c="r")  # Plot training loss as a red line
+    plt.plot(x_axis, valid_loss, label="valid_loss", c="b")  # Plot validation loss as a blue line
+
+    # Set y-axis range with an additional margin
+    y_min = min(min(train_loss), min(valid_loss))
+    y_max = max(max(train_loss), max(valid_loss))
+    y_margin = (y_max - y_min) * 0.1  # Add 10% margin
+    plt.ylim(y_min - y_margin, y_max + y_margin)
+
+    plt.grid(linestyle="--", alpha=0.5)  # Draw gridlines
+    plt.legend()  # Draw legend
+
+    # Title
+    title_string = "LOSS when hidden size 256 epoch 100"
     plt.title(title_string)
-    # 坐标轴
-    plt.xlabel("2 hours/sample")  
-    plt.ylabel("mg/L")
-    plt.savefig(config.predict_effect_path + title_string + ".jpg", dpi=100)
+
+    # Axes labels
+    plt.xlabel("Epochs")
+    plt.ylabel("Meters")
+
+    # Ensure the save path exists
+    if not os.path.exists(config.predict_effect_path):
+        os.makedirs(config.predict_effect_path)
+
+    # Save the plot and display it
+    plt.savefig(config.predict_effect_path + title_string + ".jpg", dpi=300)
+    plt.show()
 
 
-"""存储到csv文件中"""
+"""Save to CSV file"""
 
 
 def save_to_csv(config, test_Y, pred_Y_mean):
@@ -207,7 +225,7 @@ def save_to_csv(config, test_Y, pred_Y_mean):
         df.to_csv(config.csv_file_path, index=False)
 
 
-"""计算拟合指标"""
+"""Calculate fitting metrics"""
 
 
 def measurement(test_Y, pred_Y_mean):
@@ -219,39 +237,50 @@ def measurement(test_Y, pred_Y_mean):
 
 
 def main(config: Config):
-    np.random.seed(config.random_seed)  # 设置随机数种子, 保证可复现
+    np.random.seed(config.random_seed)  # Set random seed for reproducibility
     data_gainer = Data(config)
 
     train_X, train_Y, valid_X, valid_Y = data_gainer.get_train_and_valid_data()
     test_X, test_Y = data_gainer.get_test_data(return_label_data=True)
 
-    if config.do_train:  # 如果开启训练
+    if config.do_train:  # If training is enabled
+        # Start CodeCarbon tracker
+        tracker = EmissionsTracker(output_dir="./result_csv", project_name="LSTM-Precipitation_Carbon")
+        tracker.start()
+
         model, train_loss, valid_loss = train(config, [train_X, train_Y, valid_X, valid_Y])
-        plot_loss(config, train_loss[50:], valid_loss[50:])
 
-    if config.do_predict:  # 如果开启测试
-        if config.use_trained_model:  # 如果使用训练好的模型
-            model = None  # model输入置空
+        # Stop emissions tracking
+        emissions = tracker.stop()
+        save_emissions_to_csv(emissions)
+
+        start_index = 0  # Start plotting from the first epoch
+        plot_loss(config, train_loss[start_index:], valid_loss[start_index:])
+
+    if config.do_predict:  # If prediction is enabled
+        print("Starting prediction...")
+        
+        # Ensure the trained model is loaded successfully, even if saved via early stopping
+        if config.use_trained_model:
+            model = None  # Force loading of the trained model
         pred_Y = predict(config, test_X, model)
+        print("Prediction completed.")
 
-    # 将结果反标准化
-    test_Y = data_gainer.scalerY.inverse_transform(test_Y.reshape(-1, 1))
-    pred_Y = data_gainer.scalerY.inverse_transform(pred_Y.reshape(-1, 1))
+        # Inverse transform results
+        test_Y = data_gainer.scalerY.inverse_transform(test_Y.reshape(-1, 1))
+        pred_Y = data_gainer.scalerY.inverse_transform(pred_Y.reshape(-1, 1))
 
-    # 绘制图像
-    plot(config, test_Y, pred_Y)
+        # Plot results
+        plot(config, test_Y, pred_Y)
 
-    # 计算指标
-    measurement(test_Y, pred_Y)
+        # Compute evaluation metrics
+        measurement(test_Y, pred_Y)
 
-    # 保存数据到csv
-    save_to_csv(config, test_Y, pred_Y)
-    
-    # 保存碳排放数据
-    save_emissions_to_csv(emissions)
-
+        # Save results to CSV
+        save_to_csv(config, test_Y, pred_Y)
+        print("Prediction and CSV save completed.")
 
 if __name__ == "__main__":
-    # 主执行入口
+    # Main execution entry
     con = Config()
     main(con)
